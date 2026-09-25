@@ -183,9 +183,18 @@ about 3 minutes on 4 cores):
   gibberish. That is overfitting: 72 letters are too few to pin down 10
   cables statistically.
 
-Breaking it for real needs M4 support (26× more rotor positions, plus the
-Greek wheel and thin reflectors), a full plugboard, and in practice either
-a crib or a very large compute budget. Enigma@Home's volunteer grid has
-already spent the latter. The most promising angles are historical ones:
-the Thetis key's properties, the indicator `VROL NMKA`, and likely cribs
-for a message sent to a U-boat on 1 May 1945.
+The full **M4** search (`--machine m4 --reflector BC`) checks all 336
+rotor orders × Beta/Gamma × thin B/C × every Greek-wheel and start
+position. It took 28 minutes on 4 cores. The result is the same: with no
+plugboard, no M4 setting decrypts the message to readable text. With a
+few cables that would very likely have shown up too. The top-ranked
+results are again statistics-shaped gibberish (for example
+`EATHIGHOMEOWFRE...`).
+
+This fits the history: naval keys used 10 plugboard cables, and at 72
+letters that is beyond any ciphertext-only attack (see the table above).
+Breaking it realistically needs either a crib or a very large compute
+budget, and Enigma@Home's volunteer grid has already spent the latter.
+The most promising angles are historical: the Thetis key's properties,
+the indicator `VROL NMKA`, and likely cribs for a message sent to a
+U-boat on 1 May 1945. `enigma crib` shows where a guessed word can sit.
