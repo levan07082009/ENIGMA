@@ -21,7 +21,9 @@ use std::time::Instant;
 
 pub struct Options {
     pub rotors: Vec<usize>,
-    pub reflectors: Vec<usize>,
+    /// Reflectors to try; for an M4 each Greek wheel/thin reflector/offset
+    /// combination is one entry.
+    pub reflectors: Vec<Refl>,
     pub langs: Vec<Lang>,
     /// Candidates kept per metric after phase 1.
     pub keep: usize,
@@ -31,6 +33,9 @@ pub struct Options {
     pub full_rings: bool,
     pub threads: usize,
     pub progress: bool,
+    /// Search only part `k` of `n` (1-based) of the rotor space, so a long
+    /// search can be split across machines or sessions.
+    pub part: (usize, usize),
 }
 
 pub struct Solution {
@@ -49,7 +54,7 @@ pub struct Solution {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Cand {
     order: [u8; 3],
-    refl: u8,
+    refl: Refl,
     off: [u8; 3],
     ring_m: u8,
     ring_r: u8,
@@ -59,7 +64,7 @@ impl Cand {
     fn settings(&self) -> Settings {
         Settings {
             rotors: self.order.map(|r| r as usize),
-            reflector: self.refl as usize,
+            reflector: self.refl,
             rings: [0, self.ring_m, self.ring_r],
             pos: [
                 self.off[0],
@@ -127,10 +132,13 @@ fn parallel<S: Send>(
                             .compare_exchange(last, ms, Ordering::Relaxed, Ordering::Relaxed)
                             .is_ok()
                     {
+                        let frac = (i + 1) as f64 / n as f64;
+                        let secs = start.elapsed().as_secs_f64();
                         eprint!(
-                            "\r  {label}: {:5.1}%  ({:.0}s)   ",
-                            100.0 * (i + 1) as f64 / n as f64,
-                            start.elapsed().as_secs_f64()
+                            "\r  {label}: {:5.1}%  elapsed {}  left ~{}   ",
+                            100.0 * frac,
+                            hms(secs),
+                            hms(secs / frac - secs)
                         );
                     }
                 }
@@ -139,9 +147,18 @@ fn parallel<S: Send>(
         }
     });
     if progress {
-        eprintln!("\r  {label}: done in {:.1}s          ", start.elapsed().as_secs_f64());
+        eprintln!("\r  {label}: done in {}                              ", hms(start.elapsed().as_secs_f64()));
     }
     out.into_inner().unwrap()
+}
+
+fn hms(secs: f64) -> String {
+    let s = secs as u64;
+    if s >= 3600 {
+        format!("{}h{:02}m", s / 3600, s / 60 % 60)
+    } else {
+        format!("{}m{:02}s", s / 60, s % 60)
+    }
 }
 
 fn rotor_orders(rotors: &[usize]) -> Vec<[usize; 3]> {
@@ -170,6 +187,8 @@ pub fn crack(ct: &[u8], opts: &Options) -> Vec<Solution> {
             }
         }
     }
+    let (k, parts) = opts.part;
+    let items: Vec<_> = items.into_iter().enumerate().filter(|(i, _)| i % parts == k - 1).map(|(_, x)| x).collect();
     let metrics = opts.langs.len() + 1; // one per language + IoC
     let ioc_metric = metrics - 1;
     // Ring settings to try in phase 1. Only the middle and right rings matter
@@ -192,7 +211,7 @@ pub fn crack(ct: &[u8], opts: &Options) -> Vec<Solution> {
         |tops, idx| {
             let (order, refl_i, off_m) = items[idx];
             let rot: [Rotor; 3] = std::array::from_fn(|i| Rotor::new(order[i]));
-            let refl = reflector(refl_i);
+            let refl = refl_i.wiring();
             // L, M and reflector folded into one table per (left, middle) offset.
             let mut inner = vec![0u8; 26 * 26 * 26];
             for l in 0..26 {
@@ -246,7 +265,7 @@ pub fn crack(ct: &[u8], opts: &Options) -> Vec<Solution> {
                         }
                         let c = Cand {
                             order: order.map(|r| r as u8),
-                            refl: refl_i as u8,
+                            refl: refl_i,
                             off: [off_l, off_m, off_r],
                             ring_m,
                             ring_r,
@@ -309,7 +328,7 @@ pub fn crack(ct: &[u8], opts: &Options) -> Vec<Solution> {
 fn solve_candidate(ct: &[u8], cand: Cand, from_ioc: bool, lang: &Lang, max_plugs: usize) -> Solution {
     let n = ct.len();
     let rot: [Rotor; 3] = std::array::from_fn(|i| Rotor::new(cand.order[i] as usize));
-    let refl = reflector(cand.refl as usize);
+    let refl = cand.refl.wiring();
     let mut buf = vec![0u8; n];
     let mut s = cand.settings();
     let core = core_perms(&s, n);
@@ -498,7 +517,7 @@ mod tests {
         let text = to_letters(crate::DEMO_DE);
         let key = Settings {
             rotors: [4, 1, 3],
-            reflector: 1,
+            reflector: Refl::Std(1),
             rings: [20, 3, 19],
             pos: [2, 20, 2],
             plug: parse_plugs("AI BM ES FL GK HP JQ NR VY WZ").unwrap(),
@@ -506,7 +525,7 @@ mod tests {
         let pt = &text[..150];
         let ct = run(&key, pt);
         let off: [u8; 3] = std::array::from_fn(|k| (key.pos[k] + 26 - key.rings[k]) % 26);
-        let cand = Cand { order: key.rotors.map(|r| r as u8), refl: 1, off, ring_m: key.rings[1], ring_r: key.rings[2] };
+        let cand = Cand { order: key.rotors.map(|r| r as u8), refl: Refl::Std(1), off, ring_m: key.rings[1], ring_r: key.rings[2] };
         let lang = Lang::german();
         let sol = solve_candidate(&ct, cand, true, &lang, 10);
         eprintln!("fitness {:.2} plug {} rings {:?}", sol.fitness, plug_pairs(&sol.settings.plug), sol.settings.rings);

@@ -1,5 +1,11 @@
-//! Enigma I / M3 machine model: rotors I-VIII, reflectors A/B/C, ring
-//! settings, plugboard and the double-stepping anomaly.
+//! Enigma I / M3 / M4 machine model: rotors I-VIII, reflectors A/B/C, the
+//! M4's Greek wheels (Beta, Gamma) with thin reflectors, ring settings,
+//! plugboard and the double-stepping anomaly.
+//!
+//! The M4's Greek wheel never steps, so Greek wheel + thin reflector act as
+//! one fixed reflector. An M4 is therefore modelled as a three-rotor machine
+//! whose reflector is `Refl::M4 { greek, thin, off }`, where `off` is the
+//! Greek wheel's position minus its ring setting.
 
 pub const ROTORS: [(&str, &str, &str); 8] = [
     ("I", "EKMFLGDQVZNTOWYHXUSPAIBRCJ", "Q"),
@@ -18,6 +24,18 @@ pub const REFLECTORS: [(&str, &str); 3] = [
     ("C", "FVPJIAOYEDRZXWGCTKUQSBNMHL"),
 ];
 
+/// M4 Greek wheels (fourth rotor, never steps).
+pub const GREEK: [(&str, &str); 2] = [
+    ("Beta", "LEYJVCNIXWPBQMDRTAKZGFUHOS"),
+    ("Gamma", "FSOKANUERHMBTIYCWLQPZXVGJD"),
+];
+
+/// M4 thin reflectors (UKW-b, UKW-c).
+pub const THIN: [(&str, &str); 2] = [
+    ("B", "ENKQAUYWJICOPBLMDXZVFTHRGS"),
+    ("C", "RDOBJNTKVEHMLFCWZAXGYIPSUQ"),
+];
+
 /// A rotor with its wiring pre-shifted for every offset (position - ring),
 /// so a pass through it is a single table lookup.
 pub struct Rotor {
@@ -29,6 +47,10 @@ pub struct Rotor {
 impl Rotor {
     pub fn new(index: usize) -> Rotor {
         let (_, wiring, notches) = ROTORS[index];
+        Rotor::from_wiring(wiring, notches)
+    }
+
+    pub fn from_wiring(wiring: &str, notches: &str) -> Rotor {
         let w: Vec<u8> = wiring.bytes().map(|b| b - b'A').collect();
         let mut inv = [0u8; 26];
         for (i, &o) in w.iter().enumerate() {
@@ -50,12 +72,38 @@ impl Rotor {
     }
 }
 
-pub fn reflector(index: usize) -> [u8; 26] {
+fn wiring_table(w: &str) -> [u8; 26] {
     let mut r = [0u8; 26];
-    for (i, b) in REFLECTORS[index].1.bytes().enumerate() {
+    for (i, b) in w.bytes().enumerate() {
         r[i] = b - b'A';
     }
     r
+}
+
+/// The reflecting end of the machine: a plain M3 reflector, or an M4 Greek
+/// wheel (at offset `off` = position - ring) in front of a thin reflector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Refl {
+    Std(u8),
+    M4 { greek: u8, thin: u8, off: u8 },
+}
+
+impl Refl {
+    pub fn wiring(&self) -> [u8; 26] {
+        match *self {
+            Refl::Std(i) => wiring_table(REFLECTORS[i as usize].1),
+            Refl::M4 { greek, thin, off } => {
+                let g = Rotor::from_wiring(GREEK[greek as usize].1, "");
+                let t = wiring_table(THIN[thin as usize].1);
+                let o = off as usize;
+                std::array::from_fn(|c| g.bwd[o][t[g.fwd[o][c] as usize] as usize])
+            }
+        }
+    }
+
+    pub fn is_m4(&self) -> bool {
+        matches!(self, Refl::M4 { .. })
+    }
 }
 
 /// A complete daily key + message start position.
@@ -63,7 +111,7 @@ pub fn reflector(index: usize) -> [u8; 26] {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub rotors: [usize; 3],
-    pub reflector: usize,
+    pub reflector: Refl,
     pub rings: [u8; 3],
     pub pos: [u8; 3],
     pub plug: [u8; 26],
@@ -91,7 +139,7 @@ pub fn step(pos: &mut [u8; 3], notch_m: &[bool; 26], notch_r: &[bool; 26]) {
 /// `plug[core[i][plug[c]]]`, which lets the plugboard be varied cheaply.
 pub fn core_perms(s: &Settings, n: usize) -> Vec<[u8; 26]> {
     let rot: [Rotor; 3] = std::array::from_fn(|i| Rotor::new(s.rotors[i]));
-    let refl = reflector(s.reflector);
+    let refl = s.reflector.wiring();
     let mut pos = s.pos;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
@@ -132,6 +180,15 @@ pub fn run(s: &Settings, text: &[u8]) -> Vec<u8> {
 
 pub fn rotor_index(name: &str) -> Option<usize> {
     ROTORS.iter().position(|r| r.0.eq_ignore_ascii_case(name))
+}
+
+pub fn greek_index(name: &str) -> Option<usize> {
+    GREEK.iter().position(|g| g.0.eq_ignore_ascii_case(name))
+}
+
+pub fn thin_index(name: &str) -> Option<usize> {
+    let n = name.trim_start_matches("UKW-").trim_start_matches("UKW");
+    THIN.iter().position(|r| r.0.eq_ignore_ascii_case(n))
 }
 
 pub fn reflector_index(name: &str) -> Option<usize> {
@@ -188,14 +245,15 @@ pub fn parse_plugs(s: &str) -> Result<[u8; 26], String> {
     Ok(plug)
 }
 
-/// Accepts "BUL", "B U L" or "02 21 12" / "2,21,12" (1-based numbers).
-pub fn parse_triple(s: &str) -> Result<[u8; 3], String> {
+/// Parse `n` letters ("BUL") or 1-based numbers ("02 21 12", "2,21,12"),
+/// e.g. ring settings or start positions (n = 4 for an M4).
+pub fn parse_letters(s: &str, n: usize) -> Result<Vec<u8>, String> {
     let nums: Vec<&str> = s
         .split(|c: char| c == ' ' || c == ',' || c == '-')
         .filter(|p| !p.is_empty())
         .collect();
-    if nums.len() == 3 && nums.iter().all(|n| n.chars().all(|c| c.is_ascii_digit())) {
-        let mut out = [0u8; 3];
+    if nums.len() == n && nums.iter().all(|n| n.chars().all(|c| c.is_ascii_digit())) {
+        let mut out = vec![0u8; n];
         for (i, n) in nums.iter().enumerate() {
             let v: u8 = n.parse().map_err(|_| format!("bad number '{n}'"))?;
             if !(1..=26).contains(&v) {
@@ -206,10 +264,10 @@ pub fn parse_triple(s: &str) -> Result<[u8; 3], String> {
         return Ok(out);
     }
     let l = to_letters(s);
-    if l.len() != 3 {
-        return Err(format!("expected three letters or numbers, got '{s}'"));
+    if l.len() != n {
+        return Err(format!("expected {n} letters or numbers, got '{s}'"));
     }
-    Ok([l[0], l[1], l[2]])
+    Ok(l)
 }
 
 #[cfg(test)]
@@ -221,9 +279,9 @@ mod tests {
             rotors: std::array::from_fn(|i| {
                 rotor_index(rotors.split(',').nth(i).unwrap()).unwrap()
             }),
-            reflector: reflector_index(refl).unwrap(),
-            rings: parse_triple(rings).unwrap(),
-            pos: parse_triple(pos).unwrap(),
+            reflector: Refl::Std(reflector_index(refl).unwrap() as u8),
+            rings: parse_letters(rings, 3).unwrap().try_into().unwrap(),
+            pos: parse_letters(pos, 3).unwrap().try_into().unwrap(),
             plug: parse_plugs(plugs).unwrap(),
         }
     }
@@ -257,6 +315,32 @@ mod tests {
                   XQSPINQMATLPIFSVKDASCTACDPBOPVHJK";
         let pt = to_string(&run(&s, &to_letters(ct)));
         assert!(pt.starts_with("AUFKLXABTEILUNGXVONXKURTINOWAXKURTINOWAX"), "{pt}");
+    }
+
+    #[test]
+    fn m4_compatibility_mode() {
+        // Beta at A + thin B is wired to equal the M3 reflector B, and
+        // Gamma at A + thin C equals reflector C.
+        let b = Refl::M4 { greek: 0, thin: 0, off: 0 }.wiring();
+        assert_eq!(b, Refl::Std(1).wiring());
+        let c = Refl::M4 { greek: 1, thin: 1, off: 0 }.wiring();
+        assert_eq!(c, Refl::Std(2).wiring());
+        for off in 0..26 {
+            let w = Refl::M4 { greek: 1, thin: 0, off }.wiring();
+            assert!((0..26).all(|i| w[w[i] as usize] as usize == i && w[i] as usize != i));
+        }
+    }
+
+    #[test]
+    fn m4_u264_1942() {
+        // U-264 (Kapitaenleutnant Hartwig Looks), 25 November 1942, broken by
+        // the M4 Message Breaking Project in 2006.
+        // UKW thin B, Beta II IV I, rings A A A V, start V J N A.
+        let mut s = settings("II,IV,I", "B", "AAV", "JNA", "AT BL DF GJ HM NW OP QY RZ VX");
+        s.reflector = Refl::M4 { greek: 0, thin: 0, off: (b'V' - b'A') };
+        let ct = "NCZWVUSXPNYMINHZXMQXSFWXWLKJAHSHNMCOCCAKUQPMKCSMHKSEINJUSBLKIOSXCKUBHMLLXCSJUSRRDVKOHULXWCCBGVLIYXEOAHXRHKKFVDREWEZLXOBAFGYUJQUKGRTVUKAMEURBVEKSUHHVOYHABCJWMAKLFKLMYFVNRIZRVVRTKOFDANJMOLBGFFLEOPRGTFLVRHOWOPBEKVWMUQFMPWPARMFHAGKXIIBG";
+        let pt = to_string(&run(&s, &to_letters(ct)));
+        assert!(pt.starts_with("VONVONJLOOKSJHFFTTTEINSEINSDREIZWOYYQNNSNEUNINHALTXXBEIANGRIFFUNTERWASSERGEDRUECKT"), "{pt}");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::io::Read;
 use std::time::Instant;
 
 const USAGE: &str = "\
-Enigma I / M3 simulator and ciphertext-only cracker
+Enigma I / M3 / M4 simulator and ciphertext-only cracker
 
 USAGE:
   enigma crack   [OPTIONS] [CIPHERTEXT...]   break a message (text, -f FILE or stdin)
@@ -17,20 +17,28 @@ USAGE:
   enigma crib    --crib WORD [CIPHERTEXT...] where can a known word sit?
   enigma run     --rotors II,IV,V --reflector B --rings BUL --start BLA
                  --plugs \"AV BS CG\" [TEXT...]   encrypt = decrypt
-  enigma demo    [--length N] [--plugs N] [--lang de|en] [--seed N]
+                 M4: --rotors Beta,II,IV,I --reflector B --rings AAAV --start VJNA
+  enigma demo    [--length N] [--plugs N] [--lang de|en] [--seed N] [CRACK OPTIONS]
+                 (the random key is drawn from the rotors/reflectors searched)
 
 CRACK OPTIONS:
+  --machine m3|m4       m3 = Enigma I / M3 (3 rotors); m4 = naval 4-rotor
+                        machine (Greek wheel + thin reflector) (default m3)
+  --greek SET           M4 Greek wheels: beta, gamma or both (default both)
   --lang de|en|auto     plaintext language model          (default auto = both)
   --rotors SET          I-V (Enigma I / army), all (I-VIII, naval M3),
                         or a list such as I,II,IV         (default I-V)
   --reflector SET       B, C, A or a combination like BC  (default B)
+                        (with --machine m4: thin B, thin C or BC)
   --max-plugs N         plugboard cables to search, 0-13  (default 10)
-  --rings auto|full|fast  full = also brute-force ring settings in phase 1
-                        (slower, needed for short messages); auto = full
-                        when the message has <= 200 letters (default auto)
+  --rings auto|full|fast  full = also brute-force middle-ring stepping in
+                        phase 1 (slower, best for short messages); auto =
+                        full for M3 messages of <= 200 letters, else fast
   --keep N              phase-1 candidates kept per metric (default 2000)
   --threads N           worker threads                    (default all cores)
   --show N              number of solutions printed       (default 3)
+  --part K/N            search only part K of N, to split a long search
+                        across machines or Colab sessions  (default 1/1)
   -f FILE               read ciphertext from a file
 ";
 
@@ -100,17 +108,44 @@ fn parse_rotor_set(s: &str) -> Vec<usize> {
     }
 }
 
-fn parse_reflector_set(s: &str) -> Vec<usize> {
-    s.split(|c: char| c == ',' || c == ' ')
-        .flat_map(|p| p.chars().map(|c| c.to_string()).collect::<Vec<_>>())
-        .filter(|p| !p.trim().is_empty())
-        .map(|r| reflector_index(&r).unwrap_or_else(|| die(&format!("unknown reflector '{r}'"))))
+/// "BC", "B,C", "UKW-B" -> reflector indices (M3) or thin reflector indices (M4).
+fn parse_reflector_set(s: &str, m4: bool) -> Vec<usize> {
+    let s = s.to_ascii_uppercase().replace("UKW-", "").replace("UKW", "");
+    s.chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| {
+            let r = c.to_string();
+            let idx = if m4 { thin_index(&r) } else { reflector_index(&r) };
+            idx.unwrap_or_else(|| die(&format!("unknown {}reflector '{r}'", if m4 { "thin " } else { "" })))
+        })
         .collect()
 }
 
+fn parse_greek_set(s: &str) -> Vec<usize> {
+    match s.to_ascii_lowercase().as_str() {
+        "both" | "all" => vec![0, 1],
+        _ => s
+            .split(',')
+            .map(|g| greek_index(g.trim()).unwrap_or_else(|| die(&format!("unknown Greek wheel '{g}' (beta or gamma)"))))
+            .collect(),
+    }
+}
+
 fn describe(s: &Settings) -> String {
-    let names: Vec<&str> = s.rotors.iter().map(|&r| ROTORS[r].0).collect();
-    let nums: Vec<String> = s.rings.iter().map(|r| format!("{:02}", r + 1)).collect();
+    let mut names: Vec<&str> = s.rotors.iter().map(|&r| ROTORS[r].0).collect();
+    let mut rings = s.rings.to_vec();
+    let mut pos = s.pos.to_vec();
+    let refl = match s.reflector {
+        Refl::Std(i) => REFLECTORS[i as usize].0.to_string(),
+        Refl::M4 { greek, thin, off } => {
+            // Only position - ring matters for the Greek wheel: report ring A.
+            names.insert(0, GREEK[greek as usize].0);
+            rings.insert(0, 0);
+            pos.insert(0, off);
+            format!("thin {} (M4)", THIN[thin as usize].0)
+        }
+    };
+    let nums: Vec<String> = rings.iter().map(|r| format!("{:02}", r + 1)).collect();
     let plugs = plug_pairs(&s.plug);
     format!(
         "  Reflector (UKW):        {}\n  \
@@ -118,28 +153,43 @@ fn describe(s: &Settings) -> String {
            Rings (Ringstellung):   {} ({})\n  \
            Start (Grundstellung):  {}\n  \
            Plugboard (Stecker):    {}",
-        REFLECTORS[s.reflector].0,
+        refl,
         names.join(" "),
-        to_string(&s.rings),
+        to_string(&rings),
         nums.join(" "),
-        to_string(&s.pos),
+        to_string(&pos),
         if plugs.is_empty() { "(none)".into() } else { plugs }
     )
 }
 
 fn settings_from_args(a: &Args) -> Settings {
-    let rotors = parse_rotor_set(a.get("rotors").unwrap_or_else(|| die("--rotors required, e.g. II,IV,V")));
-    if rotors.len() != 3 {
-        die("--rotors needs exactly three rotors, left to right");
+    let names: Vec<&str> = a
+        .get("rotors")
+        .unwrap_or_else(|| die("--rotors required, e.g. II,IV,V or Beta,II,IV,I"))
+        .split(',')
+        .map(str::trim)
+        .collect();
+    let m4 = names.len() == 4;
+    if !(names.len() == 3 || m4) {
+        die("--rotors needs three rotors (M3) or a Greek wheel plus three rotors (M4), left to right");
     }
-    let refl = parse_reflector_set(a.get("reflector").unwrap_or("B"));
-    let plugs = parse_plugs(a.get("plugs").unwrap_or("")).unwrap_or_else(|e| die(&e));
+    let n = names.len();
+    let rotors = parse_rotor_set(&names[n - 3..].join(","));
+    let rings = parse_letters(a.get("rings").unwrap_or(&"AAAA"[..n]), n).unwrap_or_else(|e| die(&e));
+    let pos = parse_letters(a.get("start").unwrap_or(&"AAAA"[..n]), n).unwrap_or_else(|e| die(&e));
+    let refl = parse_reflector_set(a.get("reflector").unwrap_or("B"), m4);
+    let reflector = if m4 {
+        let greek = greek_index(names[0]).unwrap_or_else(|| die("M4: the first rotor must be Beta or Gamma"));
+        Refl::M4 { greek: greek as u8, thin: refl[0] as u8, off: (pos[0] + 26 - rings[0]) % 26 }
+    } else {
+        Refl::Std(refl[0] as u8)
+    };
     Settings {
         rotors: [rotors[0], rotors[1], rotors[2]],
-        reflector: refl[0],
-        rings: parse_triple(a.get("rings").unwrap_or("AAA")).unwrap_or_else(|e| die(&e)),
-        pos: parse_triple(a.get("start").unwrap_or("AAA")).unwrap_or_else(|e| die(&e)),
-        plug: plugs,
+        reflector,
+        rings: [rings[n - 3], rings[n - 2], rings[n - 1]],
+        pos: [pos[n - 3], pos[n - 2], pos[n - 1]],
+        plug: parse_plugs(a.get("plugs").unwrap_or("")).unwrap_or_else(|e| die(&e)),
     }
 }
 
@@ -209,16 +259,42 @@ fn options(a: &Args, n: usize) -> Options {
         "auto" | "both" => vec![Lang::german(), Lang::english()],
         l => vec![Lang::by_name(l).unwrap_or_else(|| die(&format!("unknown language '{l}'")))],
     };
+    let m4 = match a.get("machine").unwrap_or("m3").to_ascii_lowercase().as_str() {
+        "m3" | "i" | "enigma-i" => false,
+        "m4" => true,
+        m => die(&format!("unknown machine '{m}' (m3 or m4)")),
+    };
+    let refl = parse_reflector_set(a.get("reflector").unwrap_or("B"), m4);
+    let reflectors = if m4 {
+        let mut v = vec![];
+        for &greek in &parse_greek_set(a.get("greek").unwrap_or("both")) {
+            for &thin in &refl {
+                for off in 0..26 {
+                    v.push(Refl::M4 { greek: greek as u8, thin: thin as u8, off });
+                }
+            }
+        }
+        v
+    } else {
+        refl.iter().map(|&r| Refl::Std(r as u8)).collect()
+    };
+    let part = a.get("part").unwrap_or("1/1");
+    let part = part
+        .split_once('/')
+        .and_then(|(k, n)| Some((k.trim().parse().ok()?, n.trim().parse().ok()?)))
+        .filter(|&(k, n): &(usize, usize)| k >= 1 && k <= n)
+        .unwrap_or_else(|| die(&format!("--part must look like 3/10, got '{part}'")));
     Options {
-        rotors: parse_rotor_set(a.get("rotors").unwrap_or("I-V")),
-        reflectors: parse_reflector_set(a.get("reflector").unwrap_or("B")),
+        rotors: parse_rotor_set(a.get("rotors").unwrap_or(if m4 { "all" } else { "I-V" })),
+        reflectors,
+        part,
         langs,
         keep: a.num("keep", 2000),
         max_plugs: a.num("max-plugs", 10).min(13),
         full_rings: match a.get("rings").unwrap_or("auto") {
             "full" => true,
             "fast" => false,
-            _ => n <= 200,
+            _ => !m4 && n <= 200,
         },
         threads: a.num(
             "threads",
@@ -230,15 +306,19 @@ fn options(a: &Args, n: usize) -> Options {
 
 fn run_crack(ct: &[u8], opts: &Options, show: usize) -> Vec<crack::Solution> {
     let orders = opts.rotors.len() * (opts.rotors.len() - 1) * (opts.rotors.len() - 2);
+    let m4 = opts.reflectors.iter().any(|r| r.is_m4());
     eprintln!(
-        "Cracking {} letters: {} rotor orders x {} reflector(s), {} language model(s), up to {} plug cables, {} ring search, {} threads",
+        "Cracking {} letters{}: {} rotor orders x {} {}, {} language model(s), up to {} plug cables, {} ring search, {} threads{}",
         ct.len(),
+        if m4 { " (Enigma M4)" } else { "" },
         orders,
         opts.reflectors.len(),
+        if m4 { "Greek wheel/thin reflector/position combos" } else { "reflector(s)" },
         opts.langs.len(),
         opts.max_plugs,
         if opts.full_rings { "full" } else { "fast" },
-        opts.threads
+        opts.threads,
+        if opts.part.1 > 1 { format!(", part {}/{}", opts.part.0, opts.part.1) } else { String::new() }
     );
     let t = Instant::now();
     let sols = crack(ct, opts);
@@ -309,10 +389,14 @@ fn main() {
             let text = to_letters(if lang == "en" { DEMO_EN } else { DEMO_DE });
             let len = a.num("length", 150).min(text.len());
             let nplugs = a.num("plugs", 10).min(13);
-            let mut rotors: Vec<usize> = (0..5).collect();
-            for i in (1..5).rev() {
+            let mut opts = options(&a, len);
+            opts.langs = vec![Lang::by_name(lang).unwrap_or_else(Lang::german)];
+            // Draw the secret key from the space the crack will search.
+            let mut rotors = opts.rotors.clone();
+            for i in (1..rotors.len()).rev() {
                 rotors.swap(i, rng.below(i + 1));
             }
+            let reflector = opts.reflectors[rng.below(opts.reflectors.len())];
             let mut letters: Vec<usize> = (0..26).collect();
             for i in (1..26).rev() {
                 letters.swap(i, rng.below(i + 1));
@@ -324,7 +408,7 @@ fn main() {
             }
             let s = Settings {
                 rotors: [rotors[0], rotors[1], rotors[2]],
-                reflector: 1,
+                reflector,
                 rings: std::array::from_fn(|_| rng.below(26) as u8),
                 pos: std::array::from_fn(|_| rng.below(26) as u8),
                 plug,
@@ -333,8 +417,6 @@ fn main() {
             let ct = run(&s, pt);
             println!("Demo (seed {seed}) with a random secret key:\n{}\n", describe(&s));
             println!("Ciphertext:\n    {}\n", grouped(&ct, 5));
-            let mut opts = options(&a, ct.len());
-            opts.langs = vec![Lang::by_name(lang).unwrap_or_else(Lang::german)];
             let sols = run_crack(&ct, &opts, a.num("show", 1));
             let right = sols.first().map_or(0, |b| b.plaintext.iter().zip(pt).filter(|(a, b)| a == b).count());
             println!("Recovered {right}/{len} letters of the plaintext ({}).",

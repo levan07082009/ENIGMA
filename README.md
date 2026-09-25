@@ -1,15 +1,24 @@
 # Enigma cracker
 
-A fast, dependency-free Enigma I / M3 simulator and **ciphertext-only**
-code breaker written in Rust. It uses every CPU core.
+A fast, dependency-free Enigma I / M3 / **M4** simulator and
+**ciphertext-only** code breaker written in Rust. It uses every CPU core.
 
-* Machine: rotors I–VIII, reflectors (UKW) A/B/C, ring settings, plugboard,
-  and the middle-rotor double step. The simulator is verified against the
-  real *Operation Barbarossa* message of 7 July 1941 (`cargo test`).
+* Machines: the 3-rotor Enigma I / M3, and the 4-rotor naval **M4**
+  (Greek wheels Beta/Gamma with thin reflectors B/C). All have rotors
+  I–VIII, reflectors (UKW) A/B/C, ring settings, plugboard, and the
+  middle-rotor double step. The simulator is verified against two real
+  wartime messages (`cargo test`): the M3 *Operation Barbarossa* message
+  of 7 July 1941, and the M4 message to U-264 of 25 November 1942.
 * Attack: an exhaustive rotor/ring search, then a plugboard hill-climb scored
   with German and English n-gram statistics.
 
+**No Rust on your computer?** Open [`enigma_colab.ipynb`](enigma_colab.ipynb)
+in [Google Colab](https://colab.research.google.com/) (File → Open notebook
+→ GitHub). It installs everything and walks through each command.
+
 ## Build
+
+Install Rust from <https://rustup.rs>, then:
 
 ```sh
 cargo build --release          # binary: target/release/enigma
@@ -25,8 +34,14 @@ enigma analyze -f ciphertext.txt
 # 2. Crack it (default: Enigma I rotors I-V, reflector B, German+English)
 enigma crack -f ciphertext.txt
 
-#    widest search: naval rotors I-VIII, reflectors B and C
+#    widest 3-rotor search: naval rotors I-VIII, reflectors B and C
 enigma crack -f ciphertext.txt --rotors all --reflector BC
+
+#    naval 4-rotor M4: rotors I-VIII, Greek wheels Beta+Gamma, thin B+C
+enigma crack -f ciphertext.txt --machine m4 --reflector BC
+
+#    split a long search into 4 parts (run on different machines/sessions)
+enigma crack -f ciphertext.txt --machine m4 --reflector BC --part 1/4
 
 #    you think there is no plugboard: skip the plugboard climb
 enigma crack -f ciphertext.txt --max-plugs 0
@@ -37,6 +52,9 @@ enigma crib --crib WETTERBERICHT -f ciphertext.txt
 # 4. Decrypt / encrypt with known settings (Enigma is symmetric)
 enigma run --rotors II,IV,V --reflector B --rings BUL --start BLA \
            --plugs "AV BS CG DL FU HZ IN KM OW RX" -f ciphertext.txt
+#    M4: put the Greek wheel first, give 4 ring and start letters
+enigma run --rotors Beta,II,IV,I --reflector B --rings AAAV --start VJNA \
+           --plugs "AT BL DF GJ HM NW OP QY RZ VX" -f message.txt
 
 # 5. See it work on a random key
 enigma demo --length 200 --plugs 0
@@ -52,8 +70,9 @@ Ringstellung (rings), Grundstellung (start position) and Stecker
 score above 0.75.
 
 Only the middle and right rings affect the output. The left ring just
-shifts the left rotor's start position, so the tool reports it as `A`.
-The key you get is *equivalent* to the original, not necessarily identical.
+shifts the left rotor's start position, so the tool reports it as `A`
+(and likewise the Greek wheel's ring on an M4). The key you get is
+*equivalent* to the original, not necessarily identical.
 
 ## How the attack works
 
@@ -73,7 +92,15 @@ so the attack splits the problem:
    bigrams, then trigrams, and repeats until nothing improves.
 3. **Ring refinement.** All 676 middle/right ring settings are tried with
    the recovered plugboard, and the plugboard is re-climbed if the rings
-   changed.
+   changed. Each extra cable must improve the score by a fixed margin, so
+   short texts don't collect bogus cables.
+
+**M4 trick.** The M4's Greek wheel never steps. Greek wheel plus thin
+reflector therefore act as one fixed reflector, so an M4 is exactly a
+3-rotor machine with one of 104 reflectors: Beta/Gamma × thin B/C × 26
+wheel positions. The same attack runs unchanged, 52× larger than a
+two-reflector M3 search. For M4 the ring search defaults to the fast mode:
+right-ring stepping in phase 1, then the full refinement in phase 2.
 
 ## What can realistically be broken
 
@@ -92,6 +119,9 @@ letters after a rotor step that the short text could not pin down.
 | 239 | 10 | **0/3** | ~1 min |
 
 With all eight rotors and both reflectors, the search is about 11× larger.
+An M4 demo restricted to rotors I–III and Beta (100 letters, 3 cables)
+recovered the message exactly in 17 s. The full M4 search on a 72-letter
+message takes about 30 min on 4 cores, or about an hour on free Colab.
 
 Why a full plugboard is hard: with 10 cables, 20 of the 26 letters are
 swapped. The rotor-only decryption at the correct setting is then right for
