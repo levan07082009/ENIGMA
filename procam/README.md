@@ -46,15 +46,18 @@ shows the zoom ratio and the 35mm-equivalent focal length.
 
 ## Build and install
 
-Download `procam-debug-apk` from the **ProCam APK** GitHub Actions run, or build it yourself
+Download `procam-apk` from the **ProCam APK** GitHub Actions run, or build it yourself
 (JDK 17+ and the Android SDK):
 
 ```sh
 cd procam
-./gradlew assembleDebug          # -> app/build/outputs/apk/debug/app-debug.apk
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease        # -> app/build/outputs/apk/release/app-release.apk (~2.3 MB)
+adb install -r app/build/outputs/apk/release/app-release.apk
 ./gradlew testDebugUnitTest      # smooth-zoom motion tests
 ```
+
+The release build is shrunk with R8, contains only arm64 native code, and is signed with the
+debug key so it installs without any signing setup.
 
 ## Known limits
 

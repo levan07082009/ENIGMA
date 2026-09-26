@@ -13,13 +13,18 @@ android {
         applicationId = "com.levan.procam"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 strips unused library code and resources: ~22 MB debug -> a few MB.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Pixel 6 Pro (and every current phone) is arm64; skip the other ABIs' native libs.
+            ndk { abiFilters += "arm64-v8a" }
             // Signed with the debug key so the release APK is installable without extra setup.
             signingConfig = signingConfigs.getByName("debug")
         }

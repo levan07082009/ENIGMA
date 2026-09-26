@@ -20,8 +20,8 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
-      - run: ./gradlew testDebugUnitTest lintDebug assembleDebug --console=plain
+      - run: ./gradlew testDebugUnitTest lintRelease assembleRelease --console=plain
       - uses: actions/upload-artifact@v4
         with:
-          name: procam-debug-apk
-          path: procam/app/build/outputs/apk/debug/app-debug.apk
+          name: procam-apk
+          path: procam/app/build/outputs/apk/release/app-release.apk
