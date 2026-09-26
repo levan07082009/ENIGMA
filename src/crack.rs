@@ -97,12 +97,12 @@ impl TopK {
     }
 }
 
-fn fitness(lang: &Lang, pt: &[u8]) -> f64 {
+pub fn fitness(lang: &Lang, pt: &[u8]) -> f64 {
     (lang.per_letter(pt) - lang.random) / (lang.typical - lang.random)
 }
 
 /// Run `work(i)` for i in 0..n on all threads, collecting per-thread state.
-fn parallel<S: Send>(
+pub fn parallel<S: Send>(
     n: usize,
     threads: usize,
     label: &str,
@@ -152,7 +152,7 @@ fn parallel<S: Send>(
     out.into_inner().unwrap()
 }
 
-fn hms(secs: f64) -> String {
+pub fn hms(secs: f64) -> String {
     let s = secs as u64;
     if s >= 3600 {
         format!("{}h{:02}m", s / 3600, s / 60 % 60)
@@ -161,7 +161,7 @@ fn hms(secs: f64) -> String {
     }
 }
 
-fn rotor_orders(rotors: &[usize]) -> Vec<[usize; 3]> {
+pub fn rotor_orders(rotors: &[usize]) -> Vec<[usize; 3]> {
     let mut v = vec![];
     for &a in rotors {
         for &b in rotors {
@@ -351,7 +351,7 @@ fn solve_candidate(ct: &[u8], cand: Cand, from_ioc: bool, lang: &Lang, max_plugs
 }
 
 /// Encrypt/decrypt with pre-built rotors (avoids rebuilding tables).
-fn run_with(rot: &[Rotor; 3], refl: &[u8; 26], s: &Settings, ct: &[u8], out: &mut [u8]) {
+pub fn run_with(rot: &[Rotor; 3], refl: &[u8; 26], s: &Settings, ct: &[u8], out: &mut [u8]) {
     let mut pos = s.pos;
     for (i, &c) in ct.iter().enumerate() {
         step(&mut pos, &rot[1].notch, &rot[2].notch);
@@ -402,9 +402,9 @@ fn refine_rings(
 /// Score cost of one plugboard cable (log10 x 1000 units, i.e. a cable must
 /// make the text about 10^4 times more likely). Without it, a short message lets
 /// the climb add bogus cables that fit the statistics a little better.
-const CABLE_PENALTY: i32 = 4000;
+pub const CABLE_PENALTY: i32 = 4000;
 
-fn cables(plug: &[u8; 26]) -> usize {
+pub fn cables(plug: &[u8; 26]) -> usize {
     (0..26).filter(|&k| (plug[k] as usize) > k).count()
 }
 
@@ -420,6 +420,22 @@ pub fn climb(
     penalty: i32,
     score: impl Fn(&[u8]) -> i32,
 ) -> i32 {
+    climb_locked(ct, core, plug, &[false; 26], max_pairs, buf, penalty, score)
+}
+
+/// `climb`, but letters marked in `locked` keep their current plugging
+/// (e.g. cables the Bombe deduced from a crib).
+#[allow(clippy::too_many_arguments)]
+pub fn climb_locked(
+    ct: &[u8],
+    core: &[[u8; 26]],
+    plug: &mut [u8; 26],
+    locked: &[bool; 26],
+    max_pairs: usize,
+    buf: &mut [u8],
+    penalty: i32,
+    score: impl Fn(&[u8]) -> i32,
+) -> i32 {
     let eval = |p: &[u8; 26], buf: &mut [u8]| {
         apply(ct, core, p, buf);
         score(buf) - penalty * cables(p) as i32
@@ -429,6 +445,11 @@ pub fn climb(
         let mut improved = false;
         for i in 0..26 {
             for j in i + 1..26 {
+                // Locked letters are only ever paired with locked letters, so
+                // skipping pairs that touch one never re-routes their cables.
+                if locked[i] || locked[j] {
+                    continue;
+                }
                 for q in moves(plug, i, j, max_pairs).into_iter().flatten() {
                     let s = eval(&q, buf);
                     if s > best {

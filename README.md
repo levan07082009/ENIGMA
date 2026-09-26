@@ -48,6 +48,10 @@ enigma crack -f ciphertext.txt --max-plugs 0
 
 # 3. Got a guess for a word in the message (a "crib")? See where it can sit:
 enigma crib --crib WETTERBERICHT -f ciphertext.txt
+#    ...and run the Bombe with it. Works with a full plugboard.
+enigma bombe --crib WETTERBERICHT -f ciphertext.txt            # all positions
+enigma bombe --crib WETTERBERICHT --at 17 -f ciphertext.txt    # one position
+enigma bombe --machine m4 --reflector BC --lang de --crib GROSSADMIRAL -f ciphertext.txt
 
 # 4. Decrypt / encrypt with known settings (Enigma is symmetric)
 enigma run --rotors II,IV,V --reflector B --rings BUL --start BLA \
@@ -102,6 +106,56 @@ wheel positions. The same attack runs unchanged, 52× larger than a
 two-reflector M3 search. For M4 the ring search defaults to the fast mode:
 right-ring stepping in phase 1, then the full refinement in phase 2.
 
+## The Bombe: breaking a full plugboard with a crib
+
+`enigma bombe` is a software Turing-Welchman Bombe. Give it a guessed
+plaintext word (a *crib*); by default it tries every position where the
+word can sit, since Enigma never encrypts a letter to itself.
+
+1. For each crib letter, plaintext and ciphertext are linked by the rotor
+   permutation at that step and by the unknown plugboard. These links
+   form the "menu".
+2. For every wheel setting (rotor order × reflector/Greek wheel × 26³
+   offsets × middle-rotor turnover point inside the crib), it assumes a
+   plugboard partner for one letter and follows the links. It uses the
+   diagonal-board rule (S(a)=b ⇒ S(b)=a) and rejects any contradiction.
+   Every other part of the menu must also admit a consistent partner.
+3. Each surviving setting (a *stop*) comes with part of the plugboard. It
+   is turned into full keys: every ring/start setting consistent with the
+   crib, then the remaining cables are hill-climbed on the whole message.
+   Results are ranked by how well the text *outside* the crib reads.
+
+Verified by tests:
+
+* **3-rotor, full 10-cable plugboard:** random key, 160 letters, crib
+  `WETTERBERICHT`. Recovered exactly.
+* **Real M4 message to U-264 (1942), 10 cables:** crib
+  `BEIANGRIFFUNTERWASSER` (21 letters). Recovered the exact key and
+  plaintext in 9 s when searching 6 rotor orders × Beta.
+
+Speed is about 5 million wheel settings per second on 4 cores. For the
+72-letter U-534 message, a **full M4** search with a 12-letter crib at
+**one** position takes about 25 min on 4 cores. With `--turnover none`
+it takes 2–3 min, but misses keys whose middle rotor steps inside the
+crib window. That is roughly crib length / 26 of keys. Testing all ~40
+possible positions of a 12-letter crib takes about 17 h, or about 1.5 h
+with `--turnover none`. Split the work with `--part K/N` across machines
+or Colab sessions.
+
+Tips:
+
+* **Longer cribs are far better.** A 12-letter crib on 72 letters still
+  gives thousands of false stops per million settings. Each extra letter
+  (and each loop in the menu) cuts them sharply.
+* Fix what you can: `--lang de`, `--machine m4`, `--reflector`,
+  `--greek`, and `--at` if you know where the word sits. Naval messages
+  often start with the addressee or a fixed phrase.
+* A correct break shows readable text outside the crib. Wrong stops
+  produce text that only scores "partly readable" after the plugboard
+  climb.
+* Not modelled (rare): a left-rotor step inside the crib window, and the
+  middle rotor's double step right after a turnover inside the window.
+
 ## What can realistically be broken
 
 Measured with `enigma demo` on random keys, 3 random keys per row (seeds 11–13). It
@@ -145,9 +199,8 @@ this tool's default, and it is the natural next step.
 4. **Look for a crib.** German military messages often contained
    `WETTER`, `KEINEBESONDERENEREIGNISSE`, `ANX` (to...), `OBERKOMMANDO`, a
    unit name, or a sign-off. Because Enigma never encrypts a letter to
-   itself, `enigma crib` shows where a guessed word can sit. A crib plus
-   a Bombe-style search breaks short, fully plugged messages. That is the
-   natural next feature for this tool.
+   itself, `enigma crib` shows where a guessed word can sit, and
+   `enigma bombe` breaks the message from it, even with a full plugboard.
 5. **Get more ciphertext.** Several messages on the same day share rotors,
    rings and plugboard. Together they add up to enough text for the
    statistical attack.
@@ -197,4 +250,5 @@ Breaking it realistically needs either a crib or a very large compute
 budget, and Enigma@Home's volunteer grid has already spent the latter.
 The most promising angles are historical: the Thetis key's properties,
 the indicator `VROL NMKA`, and likely cribs for a message sent to a
-U-boat on 1 May 1945. `enigma crib` shows where a guessed word can sit.
+U-boat on 1 May 1945. With a good crib, `enigma bombe` can test it
+against every M4 setting (see *The Bombe* above).

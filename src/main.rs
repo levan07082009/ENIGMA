@@ -1,7 +1,9 @@
+mod bombe;
 mod crack;
 mod enigma;
 mod stats;
 
+use bombe::{BombeOptions, bombe};
 use crack::{Options, crack, crib_positions};
 use enigma::*;
 use stats::{Lang, ioc};
@@ -15,6 +17,10 @@ USAGE:
   enigma crack   [OPTIONS] [CIPHERTEXT...]   break a message (text, -f FILE or stdin)
   enigma analyze [CIPHERTEXT...]             statistics: is this plausibly Enigma?
   enigma crib    --crib WORD [CIPHERTEXT...] where can a known word sit?
+  enigma bombe   --crib WORD [--at N,M] [OPTIONS] [CIPHERTEXT...]
+                 Turing-Welchman Bombe: break a message (any plugboard)
+                 from a guessed word; tries every possible position unless
+                 --at gives 0-based offsets (see `enigma crib`)
   enigma run     --rotors II,IV,V --reflector B --rings BUL --start BLA
                  --plugs \"AV BS CG\" [TEXT...]   encrypt = decrypt
                  M4: --rotors Beta,II,IV,I --reflector B --rings AAAV --start VJNA
@@ -40,6 +46,12 @@ CRACK OPTIONS:
   --part K/N            search only part K of N, to split a long search
                         across machines or Colab sessions  (default 1/1)
   -f FILE               read ciphertext from a file
+
+BOMBE OPTIONS (plus --machine, --rotors, --reflector, --greek, --lang,
+--max-plugs, --threads, --show, --part from above):
+  --at N,M              crib start offsets to test   (default: all possible)
+  --turnover all|none   also try a middle-rotor step inside the crib window
+                        (all, default) or assume none (faster, misses some)
 ";
 
 struct Args {
@@ -349,6 +361,107 @@ fn run_crack(ct: &[u8], opts: &Options, show: usize) -> Vec<crack::Solution> {
     sols
 }
 
+fn run_bombe(a: &Args) {
+    let ct = a.text();
+    let crib = to_letters(a.get("crib").unwrap_or_else(|| die("--crib WORD required")));
+    if crib.len() < 3 || crib.len() > ct.len() {
+        die("the crib must be at least 3 letters and not longer than the message");
+    }
+    let possible = crib_positions(&ct, &crib);
+    let positions: Vec<usize> = match a.get("at") {
+        Some(list) => list
+            .split(',')
+            .map(|p| {
+                let p: usize = p.trim().parse().unwrap_or_else(|_| die(&format!("--at: bad offset '{p}'")));
+                if !possible.contains(&p) {
+                    die(&format!(
+                        "crib cannot sit at offset {p}: a letter would encrypt to itself or it runs past the end \
+                         (run `enigma crib` to list possible offsets)"
+                    ));
+                }
+                p
+            })
+            .collect(),
+        None => possible,
+    };
+    if positions.is_empty() {
+        die("the crib fits nowhere: at every offset some letter would encrypt to itself");
+    }
+    let o = options(a, ct.len());
+    let turnover = a.get("turnover").unwrap_or("all") != "none";
+    let orders = o.rotors.len() * (o.rotors.len() - 1) * (o.rotors.len() - 2);
+    let settings = positions.len() as f64 * orders as f64 * o.reflectors.len() as f64 * 17576.0
+        * if turnover { crib.len() as f64 } else { 1.0 };
+    let m4 = o.reflectors.iter().any(|r| r.is_m4());
+    eprintln!(
+        "Bombe{}: crib {} ({} letters) at {} position(s), {} rotor orders x {} {}, {:.2e} wheel settings, {} threads{}",
+        if m4 { " (Enigma M4)" } else { "" },
+        to_string(&crib),
+        crib.len(),
+        positions.len(),
+        orders,
+        o.reflectors.len(),
+        if m4 { "Greek wheel/thin reflector/position combos" } else { "reflector(s)" },
+        settings,
+        o.threads,
+        if o.part.1 > 1 { format!(", part {}/{}", o.part.0, o.part.1) } else { String::new() }
+    );
+    if crib.len() < 10 {
+        eprintln!("Note: cribs shorter than ~10-12 letters give many false stops; longer is much better.");
+    }
+    let bopts = BombeOptions {
+        rotors: o.rotors,
+        reflectors: o.reflectors,
+        positions,
+        turnover,
+        langs: o.langs,
+        max_plugs: o.max_plugs,
+        threads: o.threads,
+        progress: true,
+        part: o.part,
+    };
+    let t = Instant::now();
+    let r = bombe(&ct, &crib, &bopts);
+    eprintln!("Finished in {:.1}s\n", t.elapsed().as_secs_f64());
+    println!("Stops (wheel settings consistent with the crib): {}", r.stops);
+    if r.stops > 100_000 {
+        println!(
+            "That many stops means the crib is too short or its menu has too few loops to\n\
+             discriminate; a longer crib gives far fewer false stops and a faster run."
+        );
+    }
+    if r.solutions.is_empty() {
+        println!(
+            "\nNo key found. Either the crib is not in the message at the tested position(s), or the\n\
+             machine/rotors/reflector searched are wrong, or (rarely) the left rotor stepped inside\n\
+             the crib window. Try other cribs or positions."
+        );
+        return;
+    }
+    println!();
+    for (i, (s, &p)) in r.solutions.iter().zip(&r.positions).take(a.num("show", 3)).enumerate() {
+        // The crib letters are right by construction; judge the rest.
+        let rest: Vec<u8> = s.plaintext[..p].iter().chain(&s.plaintext[p + crib.len()..]).copied().collect();
+        let lang = Lang::by_name(s.lang).unwrap_or_else(Lang::german);
+        let fit = crack::fitness(&lang, &rest);
+        // Naval signals are terse (abbreviations, spelled-out numbers), so a
+        // correct break can score lower than prose; the 1942 U-264 message
+        // scores 0.64 here.
+        let verdict = match fit {
+            f if f > 0.6 => "reads like text: likely correct, check by eye",
+            f if f > 0.45 => "partly readable: check by eye",
+            _ => "does not read: probably a wrong stop",
+        };
+        println!(
+            "#{}  crib at offset {p}; fitness outside the crib {fit:.2} ({verdict}), {}\n{}\n  Plaintext:\n    {}\n",
+            i + 1,
+            s.lang,
+            describe(&s.settings),
+            grouped(&s.plaintext, 5),
+        );
+    }
+}
+
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = raw.first() else {
@@ -362,6 +475,7 @@ fn main() {
             run_crack(&ct, &options(&a, ct.len()), a.num("show", 3));
         }
         "analyze" | "analyse" => analyze(&a.text()),
+        "bombe" => run_bombe(&a),
         "crib" => {
             let ct = a.text();
             let crib = to_letters(a.get("crib").unwrap_or_else(|| die("--crib WORD required")));
