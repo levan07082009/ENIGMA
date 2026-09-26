@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <View
+        android:id="@+id/focusRing"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:alpha="0"
+        android:background="@drawable/focus_ring" />
+
+    <View
+        android:id="@+id/flash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="@android:color/black" />
+
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="@drawable/scrim_top"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="12dp">
+
+        <TextView
+            android:id="@+id/lensLabel"
+            style="@style/Pill"
+            android:visibility="invisible"
+            tools:text="TELE · 104mm"
+            tools:visibility="visible" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/recTimer"
+            style="@style/Pill"
+            android:textColor="#FF5252"
+            android:visibility="gone"
+            tools:text="● 00:12"
+            tools:visibility="visible" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/stabToggle"
+            style="@style/Pill"
+            android:text="@string/stab_on"
+            android:visibility="invisible"
+            tools:visibility="visible" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottomPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/scrim_bottom"
+        android:orientation="vertical"
+        android:paddingTop="24dp">
+
+        <TextView
+            android:id="@+id/zoomReadout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:fontFamily="monospace"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="4"
+            android:textColor="@android:color/white"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            tools:text="2.37×  ·  60mm" />
+
+        <LinearLayout
+            android:id="@+id/presetRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/preset_row_bg"
+            android:orientation="horizontal"
+            android:padding="3dp" />
+
+        <com.levan.procam.ZoomBarView
+            android:id="@+id/zoomBar"
+            android:layout_width="match_parent"
+            android:layout_height="58dp"
+            android:layout_marginTop="6dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp">
+
+            <TextView
+                android:id="@+id/rockerOut"
+                style="@style/RockerButton"
+                android:contentDescription="@string/zoom_out"
+                android:text="W" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/speedRow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+
+                <TextView
+                    android:id="@+id/speedHint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="#B3FFFFFF"
+                    android:textSize="11sp"
+                    tools:text="1× → 4× in 4.0 s" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/rockerIn"
+                style="@style/RockerButton"
+                android:contentDescription="@string/zoom_in"
+                android:text="T" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="96dp"
+            android:layout_marginTop="12dp">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical|start"
+                android:layout_marginStart="24dp"
+                android:background="@drawable/preset_row_bg"
+                android:orientation="horizontal"
+                android:padding="3dp">
+
+                <TextView
+                    android:id="@+id/modePhoto"
+                    style="@style/Chip"
+                    android:text="@string/mode_photo" />
+
+                <TextView
+                    android:id="@+id/modeVideo"
+                    style="@style/Chip"
+                    android:text="@string/mode_video" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/shutter"
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:layout_gravity="center"
+                android:background="@drawable/shutter_photo"
+                android:contentDescription="@string/shutter" />
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

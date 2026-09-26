@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">ProCam</string>
+    <string name="zoom_in">Zoom in (hold)</string>
+    <string name="zoom_out">Zoom out (hold)</string>
+    <string name="shutter">Shutter</string>
+    <string name="mode_photo">PHOTO</string>
+    <string name="mode_video">VIDEO</string>
+    <string name="stab_on">STAB ON</string>
+    <string name="stab_off">STAB OFF</string>
+    <string name="need_camera">ProCam needs camera permission.</string>
+</resources>

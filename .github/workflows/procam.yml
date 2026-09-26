@@ -1,0 +1,27 @@
+name: ProCam APK
+
+on:
+  push:
+    paths: ["procam/**", ".github/workflows/procam.yml"]
+  pull_request:
+    paths: ["procam/**", ".github/workflows/procam.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: procam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: ./gradlew testDebugUnitTest lintDebug assembleDebug --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: procam-debug-apk
+          path: procam/app/build/outputs/apk/debug/app-debug.apk
